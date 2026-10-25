@@ -1,0 +1,381 @@
+{
+  "name": "Criando um processo de RPA com n8n e python - dio",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "clientes",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1968,
+        1216
+      ],
+      "id": "9a3a0fe0-724c-42e8-81e8-08b799c4b0a6",
+      "name": "Webhook",
+      "webhookId": "9f2e998e-7d9c-4481-a51b-77435bf83f2a"
+    },
+    {
+      "parameters": {
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2256,
+        1216
+      ],
+      "id": "c9fa24de-dd3b-4c52-a433-6f4f0d7d83db",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pega o CSV como texto vindo do HTTP Request\nconst csvRaw = $json.data ?? $json.body ?? $json;\nconst text = (typeof csvRaw === \"string\") ? csvRaw : JSON.stringify(csvRaw);\n\nconst lines = text.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);\nconst headers = lines[0].split(\",\").map(h => h.trim());\n\nconst investimentos = lines.slice(1).map(line => {\n  const cols = line.split(\",\").map(c => c.trim());\n  const obj = {};\n  headers.forEach((h, i) => obj[h] = cols[i] ?? \"\");\n\n  // normaliza mínimo para número\n  obj.minimo = Number(String(obj.minimo).replace(/[^\\d]/g, \"\")) || 0;\n\n  return obj;\n});\n\nreturn [{ json: { investimentos } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        1216
+      ],
+      "id": "8ad09572-99f1-4121-947c-7c09dec2e2c7",
+      "name": "Organizar investimentos"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2784,
+        1040
+      ],
+      "id": "159c53a1-58f3-41ff-a5e3-102f477ea37c",
+      "name": "Juntar na mesma tabela"
+    },
+    {
+      "parameters": {
+        "jsCode": "const dados = $input.first().json;\nconst clientes = dados.body?.clientes ?? [];\nconst investimentos = dados.investimentos ?? [];\n\n// ---------- helpers ----------\nconst norm = (s) =>\n  String(s ?? \"\")\n    .normalize(\"NFD\")\n    .replace(/[\\u0300-\\u036f]/g, \"\")\n    .toLowerCase()\n    .trim();\n\nconst parseSaldo = (t) => {\n  const limpo = String(t ?? \"\").replace(/[^\\d,.-]/g, \"\");\n  const n = Number(limpo.replace(/\\./g, \"\").replace(\",\", \".\"));\n  return Number.isNaN(n) ? 0 : n;\n};\n\nconst brl = (n) =>\n  \"R$ \" + n.toFixed(2).replace(\".\", \",\").replace(/\\B(?=(\\d{3})+(?!\\d))/g, \".\");\n\nconst pick = (arr) => arr[Math.floor(Math.random() * arr.length)];\n\n// ordem de risco, usada no fallback\nconst ordem = [\"conservador\", \"moderado\", \"arrojado\"];\n\n// ---------- processamento ----------\nconst resultados = clientes.map((c) => {\n  const saldoNum = parseSaldo(c.saldo);\n  const perfilCli = norm(c.perfil);\n  const idxPerfil = ordem.indexOf(perfilCli);\n\n  // investimentos que o saldo cobre\n  const acessiveis = investimentos.filter((i) => i.minimo <= saldoNum);\n\n  // 1) ideal: mesmo perfil do cliente, o de maior mínimo que ele alcança\n  let candidatos = acessiveis\n    .filter((i) => norm(i.perfil) === perfilCli)\n    .sort((a, b) => b.minimo - a.minimo);\n\n  let motivo;\n  let escolhido = candidatos[0] ?? null;\n\n  if (escolhido) {\n    motivo = `Perfil ${c.perfil} e saldo de ${brl(saldoNum)} cobrem o mínimo de ${brl(escolhido.minimo)}.`;\n  } else {\n    // 2) fallback: perfis mais conservadores que o do cliente\n    const fallback = acessiveis\n      .filter((i) => ordem.indexOf(norm(i.perfil)) < idxPerfil)\n      .sort((a, b) => b.minimo - a.minimo);\n    escolhido = fallback[0] ?? null;\n\n    motivo = escolhido\n      ? `Saldo de ${brl(saldoNum)} não alcança o mínimo dos produtos ${c.perfil}; sugerida opção mais conservadora.`\n      : `Saldo de ${brl(saldoNum)} abaixo do mínimo de todos os investimentos disponíveis.`;\n  }\n\n  const produto = escolhido?.produto ?? \"\";\n  const rent = escolhido?.rentabilidade ?? \"\";\n\n  const mensagens = escolhido\n    ? [\n        `Olá, ${c.nome}! Com base no seu perfil ${c.perfil}, uma boa opção para você é ${produto} (rentabilidade: ${rent}).`,\n        `${c.nome}, analisamos seu saldo de ${brl(saldoNum)} e separamos ${produto} para você. Rentabilidade: ${rent}.`,\n        `Oi, ${c.nome}! ${produto} combina com seu perfil ${c.perfil} e cabe no seu saldo. Rentabilidade: ${rent}.`,\n      ]\n    : [\n        `Olá, ${c.nome}! No momento nenhum investimento se encaixa no seu saldo atual. Assim que ele crescer, avisamos!`,\n        `${c.nome}, ainda não temos uma opção ideal para seu saldo de ${brl(saldoNum)}. Vamos te avisar quando houver.`,\n      ];\n\n  return {\n    nome: c.nome,\n    email: c.email,\n    perfil: c.perfil,\n    saldo_texto: c.saldo,\n    saldo_num: saldoNum,\n    recomendacao: escolhido,\n    motivo,\n    mensagens,\n    mensagem_escolhida: pick(mensagens),\n  };\n});\n\n// 1 item por cliente (o Gemini roda 1x para cada)\nreturn resultados.map((r) => ({\n  json: {\n    ...r,\n    total_clientes: resultados.length,\n    total_investimentos: investimentos.length,\n  },\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3040,
+        1216
+      ],
+      "id": "70e68a3d-5222-4e2d-8117-888c53ec172c",
+      "name": "Criar mensagens personalizadas"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash",
+          "cachedResultUrl": ""
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Escreva um email curto em pt-BR para o cliente abaixo, sem prometer ganhos e sem garantias. Assine como \"Equipe de Investimentos\" e não use placeholders como [Seu Nome].\n\nCliente:\nNome: {{ $json.nome }}\nPerfil: {{ $json.perfil }}\nSaldo: {{ $json.saldo_texto }}\n\nRecomendação:\nProduto: {{ $json.recomendacao?.produto ?? \"nenhum\" }}\nMínimo: {{ $json.recomendacao?.minimo ?? \"-\" }}\nRentabilidade: {{ $json.recomendacao?.rentabilidade ?? \"-\" }}\nMotivo: {{ $json.motivo }}\n\nRetorne APENAS JSON com:\n{\n  \"subject\": \"...\",\n  \"text_body\": \"...\",\n  \"html_body\": \"...\"\n}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        3328,
+        1008
+      ],
+      "id": "54df0d61-9ff8-4c4a-9dca-5a1c41f1161b",
+      "name": "Assistente",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "maxTries": 5,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "xOw1d3u6pXYT6Whx",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== CONFIG =====\nconst MODO_TESTE = true; // true = manda tudo pro seu e-mail | false = envia pros clientes\nconst EMAIL_TESTE = 'COLOQUE_SEU_EMAIL_AQUI'; // usado só quando MODO_TESTE = true\n\nconst DOMINIOS_BLOQUEADOS = ['example.com', 'example.org', 'teste.com', 'test.com', 'exemplo.com'];\nconst DOMINIOS_TYPO = {\n  'gmial.com': 'gmail.com', 'gmai.com': 'gmail.com', 'gmil.com': 'gmail.com',\n  'gmail.con': 'gmail.com', 'gmail.com.br': 'gmail.com',\n  'hotmial.com': 'hotmail.com', 'hotmail.con': 'hotmail.com',\n  'outlok.com': 'outlook.com', 'yaho.com': 'yahoo.com', 'yahoo.con': 'yahoo.com',\n};\n\n// ===== VALIDAÇÃO DE E-MAIL =====\nconst validarEmail = (bruto) => {\n  const email = String(bruto ?? '').trim().toLowerCase();\n  const falha = (motivo) => ({ valido: false, email, motivo });\n\n  if (!email) return falha('e-mail vazio');\n  if (email.length > 254) return falha('e-mail longo demais');\n\n  const partes = email.split('@');\n  if (partes.length !== 2) return falha('precisa ter exatamente um @');\n\n  const [local, dominio] = partes;\n  if (!local || local.length > 64) return falha('parte antes do @ vazia ou longa demais');\n  if (!/^[a-z0-9._%+\\-]+$/.test(local)) return falha('caracteres inválidos antes do @');\n  if (local.startsWith('.') || local.endsWith('.') || local.includes('..')) return falha('pontos mal posicionados antes do @');\n\n  if (!/^[a-z0-9.\\-]+$/.test(dominio)) return falha('domínio com caracteres inválidos');\n  const labels = dominio.split('.');\n  if (labels.length < 2 || labels.some((l) => !l || l.startsWith('-') || l.endsWith('-'))) return falha('domínio inválido');\n  if (!/^[a-z]{2,}$/.test(labels[labels.length - 1])) return falha('extensão do domínio inválida');\n\n  if (DOMINIOS_BLOQUEADOS.includes(dominio)) return falha('domínio de teste/exemplo');\n  if (DOMINIOS_TYPO[dominio]) return falha(`possível erro de digitação (quis dizer @${DOMINIOS_TYPO[dominio]}?)`);\n\n  return { valido: true, email, motivo: null };\n};\n\n// ===== LEITURA DA RESPOSTA DO GEMINI =====\nconst lerJson = (t) => {\n  const limpo = String(t ?? '').replace(/```json|```/gi, '').trim();\n  try {\n    return JSON.parse(limpo);\n  } catch {\n    const m = limpo.match(/\\{[\\s\\S]*\\}/);\n    if (m) {\n      try { return JSON.parse(m[0]); } catch {}\n    }\n    return null;\n  }\n};\n\n// casa cada resposta do Gemini com o cliente de origem\nconst origem = $('Criar mensagens personalizadas');\nconst pegarOriginal = (i) => {\n  try { return origem.itemMatching(i).json; }\n  catch { return origem.all()[i].json; }\n};\n\nreturn $input.all().map((item, i) => {\n  const j = pegarOriginal(i);\n  const texto =\n    item.json?.content?.parts?.[0]?.text ??\n    item.json?.candidates?.[0]?.content?.parts?.[0]?.text ??\n    '';\n  const parsed = lerJson(texto);\n\n  const real = validarEmail(j.email);\n  const teste = MODO_TESTE ? validarEmail(EMAIL_TESTE) : null;\n  const email_valido = real.valido && (!MODO_TESTE || teste.valido);\n  const motivo_email = !real.valido\n    ? real.motivo\n    : (MODO_TESTE && !teste.valido ? 'EMAIL_TESTE não configurado' : null);\n\n  const to = MODO_TESTE ? teste.email : real.email;\n\n  const subjectBase = parsed?.subject ?? `Sugestão de investimento para ${j.nome}`;\n  const subject = MODO_TESTE ? `[TESTE → ${real.email || j.email}] ${subjectBase}` : subjectBase;\n  const text_body = parsed?.text_body ?? j.mensagem_escolhida;\n  const html_body =\n    parsed?.html_body ?? `<p>${String(text_body).replace(/\\n/g, '<br>')}</p>`;\n\n  return {\n    json: {\n      ok: !!parsed,\n      email_valido,\n      motivo_email,\n      modo_teste: MODO_TESTE,\n      to,\n      to_original: real.email,\n      subject,\n      text_body,\n      html_body,\n      meta: {\n        nome: j.nome,\n        perfil: j.perfil,\n        produto: j.recomendacao?.produto,\n        minimo: j.recomendacao?.minimo,\n        rentabilidade: j.recomendacao?.rentabilidade,\n        motivo: j.motivo,\n      },\n    },\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3744,
+        1216
+      ],
+      "id": "a10db396-76db-483b-9c23-e204b90c2c2e",
+      "name": "Normalizar certas regras"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5d6c6322-1ffc-470b-94dc-edabb4dacfcd",
+              "leftValue": "={{ $json.email_valido }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3968,
+        1216
+      ],
+      "id": "dc10b156-3ac3-41bb-9e25-219234a3365f",
+      "name": "E-mail válido?"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html_body }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Equipe de Investimentos"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        4240,
+        1120
+      ],
+      "id": "e6465ffc-d4ca-4ab9-8a03-efa11e2ba75a",
+      "name": "Send a message",
+      "webhookId": "5708a13b-8163-4d44-8bbc-10f29cd0f3ad",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "J97Was8tfE7yPq4z",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        4496,
+        1216
+      ],
+      "id": "1b70b8a5-f427-4d49-85f4-194446bd2be5",
+      "name": "Juntar enviados e inválidos"
+    },
+    {
+      "parameters": {
+        "jsCode": "const seguro = (fn) => { try { return fn(); } catch { return []; } };\n\nconst todos = seguro(() => $('Normalizar certas regras').all()).map((i) => i.json);\nconst gmail = seguro(() => $('Send a message').all()).map((i) => i.json);\n\nconst validos = todos.filter((t) => t.email_valido);\nconst invalidos = todos.filter((t) => !t.email_valido);\n\nconst txtErro = (e) =>\n  !e ? 'sem resposta do Gmail' : (typeof e === 'object' ? (e.message ?? JSON.stringify(e)) : String(e));\n\n// o Gmail processa os válidos na mesma ordem\nconst detalhes = validos.map((t, i) => {\n  const g = gmail[i];\n  const enviado = !!(g && g.id && !g.error);\n  return {\n    nome: t.meta?.nome,\n    para: t.to,\n    cliente: t.to_original,\n    status: enviado ? 'enviado' : 'falha_no_envio',\n    erro: enviado ? null : txtErro(g?.error),\n    ia_ok: t.ok,\n  };\n});\n\ninvalidos.forEach((t) => {\n  detalhes.push({\n    nome: t.meta?.nome,\n    para: null,\n    cliente: t.to_original,\n    status: 'email_invalido',\n    erro: t.motivo_email,\n    ia_ok: t.ok,\n  });\n});\n\nreturn [{\n  json: {\n    ok: true,\n    modo_teste: todos[0]?.modo_teste ?? null,\n    total: todos.length,\n    enviados: detalhes.filter((d) => d.status === 'enviado').length,\n    falhas_no_envio: detalhes.filter((d) => d.status === 'falha_no_envio').length,\n    emails_invalidos: invalidos.length,\n    detalhes,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4720,
+        1216
+      ],
+      "id": "3c999c28-54ee-402c-a71f-16ea66d97f60",
+      "name": "Resumo"
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        4944,
+        1216
+      ],
+      "id": "954fafb5-a651-4ade-a17e-235df5001378",
+      "name": "Respond to Webhook1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Juntar na mesma tabela",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Organizar investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Organizar investimentos": {
+      "main": [
+        [
+          {
+            "node": "Juntar na mesma tabela",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Juntar na mesma tabela": {
+      "main": [
+        [
+          {
+            "node": "Criar mensagens personalizadas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Criar mensagens personalizadas": {
+      "main": [
+        [
+          {
+            "node": "Assistente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assistente": {
+      "main": [
+        [
+          {
+            "node": "Normalizar certas regras",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar certas regras": {
+      "main": [
+        [
+          {
+            "node": "E-mail válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E-mail válido?": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Juntar enviados e inválidos",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Juntar enviados e inválidos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Juntar enviados e inválidos": {
+      "main": [
+        [
+          {
+            "node": "Resumo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumo": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "BGWQu08oChlGnGno",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "3923548c-a733-4d41-a4ef-b258881c7fe0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8d938ac1f9c5a3d93f2ee1d12e4389c9d497f2e61596d0fed72f351a1f01c7aa"
+  },
+  "nodeGroups": [],
+  "id": "BGWQu08oChlGnGno",
+  "tags": []
+}
